@@ -1,33 +1,238 @@
 import argparse
 import pickle
 import time
+from typing import List, Tuple, Dict, Any
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 from gensim.models import Word2Vec
-from temporal_walk import TemporalWalk
-from sklearn.model_selection import train_test_split
-import random
-from stellargraph import StellarGraph
-from stellargraph.data import TemporalRandomWalk, BiasedRandomWalk
-from stellargraph.datasets import IAEnronEmployees
-from sklearn.pipeline import Pipeline
+from node2vec import Node2Vec
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 from src.additional_datasets import FBForum, IAContact, IAContactsHypertext2009, IAEmailEU, IARadoslawEmail, \
     SocSignBitcoinAlpha, WikiElections
+from stellargraph import StellarGraph
+from temporal_walk import TemporalWalk
+from stellargraph.data import TemporalRandomWalk, BiasedRandomWalk
+from stellargraph.datasets import IAEnronEmployees
 
-TRAIN_SUBSET = 0.25
-TEST_SUBSET = 0.25
+# Constants as per paper
 EMBEDDING_SIZE = 128
-
 NUM_WALKS_PER_NODE = 10
 WALK_LENGTH = 80
+DEFAULT_CONTEXT_WINDOW_SIZE = 10
+TRAIN_RATIO = 0.75
+WORKERS=4
 
-START_CONTEXT_WINDOW_SIZE = 2
-END_CONTEXT_WINDOW_SIZE = 10
+
+class TemporalLinkPredictor:
+    def __init__(self, embedding_params: Dict[str, Any] = None):
+        self.embedding_params = embedding_params or {
+            'embedding_size': EMBEDDING_SIZE,
+            'num_walks': NUM_WALKS_PER_NODE,
+            'walk_length': WALK_LENGTH,
+            'context_window': DEFAULT_CONTEXT_WINDOW_SIZE,
+            'walk_bias': 'exponential',
+            'initial_edge_bias': 'uniform'
+        }
+
+    @staticmethod
+    def split_edges_temporal(edges: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Temporal split using first 75% edges for training"""
+        edges_sorted = edges.sort_values('time')
+        n_train = int(len(edges_sorted) * TRAIN_RATIO)
+        return edges_sorted[:n_train], edges_sorted[n_train:]
+
+    def generate_new_temporal_walks(self, edges_list: List, num_cw: int) -> List[List[str]]:
+        """Generate walks using new temporal walk method"""
+        temporal_walk = TemporalWalk(is_directed=False)
+
+        temporal_walk.add_multiple_edges(edges_list)
+        walks = temporal_walk.get_random_walks(
+            max_walk_len=self.embedding_params['walk_length'],
+            walk_bias=self.embedding_params['walk_bias'],
+            num_cw=num_cw,
+            initial_edge_bias=self.embedding_params['initial_edge_bias'],
+            walk_direction="Forward_In_Time",
+            walk_init_edge_time_bias="Bias_Earliest_Time",
+            context_window_len=self.embedding_params['context_window']
+        )
+        return [[str(node) for node in walk] for walk in walks]
+
+    def generate_old_temporal_walks(self, graph: StellarGraph, num_cw: int) -> List[List[str]]:
+        """Generate walks using old temporal walk method"""
+        temporal_rw = TemporalRandomWalk(graph)
+        return temporal_rw.run(
+            num_cw=num_cw,
+            cw_size=self.embedding_params['context_window'],
+            max_walk_length=self.embedding_params['walk_length'],
+            walk_bias=self.embedding_params['walk_bias'].lower()
+        )
+
+    def train_node2vec_model(self, graph: nx.Graph) -> (Word2Vec, float):
+        """Train Node2Vec and return the skip-gram model"""
+        start_time = time.time()
+        node2vec = Node2Vec(
+            graph,
+            dimensions=self.embedding_params['embedding_size'],
+            walk_length=self.embedding_params['walk_length'],
+            num_walks=self.embedding_params['num_walks'],
+            weight_key='time',
+            workers=WORKERS
+        )
+        walk_time = time.time() - start_time
+        return (
+            node2vec.fit(
+                window=self.embedding_params['context_window'],
+                min_count=0,
+                epochs=10
+            ),
+            walk_time
+        )
+
+    def learn_embeddings(self, walks: List[List[str]]) -> Word2Vec:
+        """Learn embeddings using Word2Vec"""
+        return Word2Vec(
+            walks,
+            vector_size=self.embedding_params['embedding_size'],
+            window=self.embedding_params['context_window'],
+            min_count=0,
+            sg=1,
+            workers=WORKERS,
+            epochs=10
+        )
+
+    @staticmethod
+    def prepare_link_prediction_data(graph: StellarGraph, test_edges: pd.DataFrame) -> Tuple[List[Tuple], np.ndarray]:
+        """Prepare positive and negative examples"""
+        positive_edges = list(test_edges[["source", "target"]].itertuples(index=False))
+
+        def sample_negative_edges(n_samples: int) -> List[Tuple]:
+            nodes = list(graph.nodes())
+            positive_set = set(positive_edges)
+            negative_edges = []
+            while len(negative_edges) < n_samples:
+                src, tgt = np.random.choice(nodes, 2, replace=False)
+                if (src, tgt) not in positive_set and (tgt, src) not in positive_set:
+                    negative_edges.append((src, tgt))
+            return negative_edges
+
+        negative_edges = sample_negative_edges(len(positive_edges))
+        edges = positive_edges + negative_edges
+        labels = np.array([1] * len(positive_edges) + [0] * len(negative_edges))
+
+        return edges, labels
+
+    def compute_edge_features(self, edges: List[Tuple], model: Word2Vec, operator: str) -> np.ndarray:
+        """Compute edge features using Hadamard product"""
+        features = []
+        for src, tgt in edges:
+            try:
+                src_emb = model.wv[str(src)]
+                tgt_emb = model.wv[str(tgt)]
+
+                if operator == 'weighted-L1':
+                    edge_emb = np.abs(src_emb - tgt_emb)
+                elif operator == 'weighted-L2':
+                    edge_emb = (src_emb - tgt_emb) ** 2
+                elif operator == 'average':
+                    edge_emb = (src_emb + tgt_emb) / 2.0
+                elif operator == 'hadamard':
+                    edge_emb = src_emb * tgt_emb
+                else:
+                    raise ValueError(f"Unknown operator: {operator}")
+
+                features.append(edge_emb)
+            except KeyError:
+                features.append(np.zeros(model.vector_size))
+        return np.array(features)
+
+    def evaluate_embeddings(self, features: np.ndarray, labels: np.ndarray) -> float:
+        """Evaluate embeddings using logistic regression"""
+        scaler = StandardScaler()
+        features_scaled = scaler.fit_transform(features)
+
+        clf = LogisticRegressionCV(
+            Cs=10,
+            cv=10,
+            scoring="roc_auc",
+            n_jobs=-1,
+            max_iter=1000,
+            solver='liblinear'
+        )
+        clf.fit(features_scaled, labels)
+
+        predictions = clf.predict_proba(features_scaled)
+        return roc_auc_score(labels, predictions[:, 1])
+
+    def run_evaluation(self, graph: StellarGraph, edges: pd.DataFrame, run_number) -> Dict[str, Any]:
+        """Run complete evaluation for all three methods"""
+        # Split edges
+        train_edges, test_edges = self.split_edges_temporal(edges)
+
+        # Create training graph
+        train_graph = StellarGraph(
+            nodes=pd.DataFrame(index=graph.nodes()),
+            edges=train_edges,
+            edge_weight_column="time"
+        )
+
+        # Prepare test data
+        test_edges_list, labels = self.prepare_link_prediction_data(train_graph, test_edges)
+
+        # Number of walks
+        num_cw = len(graph.nodes()) * self.embedding_params['num_walks'] * (self.embedding_params['walk_length'] - self.embedding_params['context_window'] + 1)
+
+        # Convert edges for new temporal walk
+        edges_list = [(int(row[0]), int(row[1]), row[2]) for row in train_edges.to_numpy()]
+
+        # Generate networkx graph for node2vec
+        graph = nx.Graph()
+        for _, row in train_edges.iterrows():
+            graph.add_edge(row["source"], row["target"], time=row["time"])
+
+        results = {}
+
+        operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
+        selected_operator = operators[run_number % len(operators)]
+
+        # 1. New Temporal Walk
+        start_time = time.time()
+        new_temporal_walks = self.generate_new_temporal_walks(edges_list, num_cw)
+        new_temporal_walk_sampling_time = time.time() - start_time
+        new_model = self.learn_embeddings(new_temporal_walks)
+        new_features = self.compute_edge_features(test_edges_list, new_model, selected_operator)
+        new_auc = self.evaluate_embeddings(new_features, labels)
+        results['new_temporal'] = {
+            'auc': new_auc,
+            'time': new_temporal_walk_sampling_time
+        }
+
+        # 2. Old Temporal Walk
+        start_time = time.time()
+        old_temporal_walks = self.generate_old_temporal_walks(train_graph, num_cw)
+        old_temporal_walk_sampling_time = time.time() - start_time
+        old_model = self.learn_embeddings(old_temporal_walks)
+        old_features = self.compute_edge_features(test_edges_list, old_model, selected_operator)
+        old_auc = self.evaluate_embeddings(old_features, labels)
+        results['old_temporal'] = {
+            'auc': old_auc,
+            'time': old_temporal_walk_sampling_time
+        }
+
+        # 3. Node2Vec
+        node2vec_model, node2vec_walk_time = self.train_node2vec_model(graph)
+        node2vec_features = self.compute_edge_features(test_edges_list, node2vec_model, selected_operator)
+        node2vec_auc = self.evaluate_embeddings(node2vec_features, labels)
+        results['node2vec'] = {
+            'auc': node2vec_auc,
+            'time': node2vec_walk_time
+        }
+
+        return results
 
 
 def get_dataset(dataset_name):
@@ -51,362 +256,84 @@ def get_dataset(dataset_name):
         raise ValueError(f'Invalid dataset name {dataset_name}')
 
 
-def positive_and_negative_links(g, edges):
-    pos = list(edges[["source", "target"]].itertuples(index=False))
-    neg = sample_negative_examples(g, pos)
-    return pos, neg
-
-
-def sample_negative_examples(g, positive_examples):
-    positive_set = set(positive_examples)
-
-    def valid_neg_edge(src, tgt):
-        return (
-            # no self-loops
-            src != tgt
-            and
-            # neither direction of the edge should be a positive one
-            (src, tgt) not in positive_set
-            and (tgt, src) not in positive_set
-        )
-
-    possible_neg_edges = [
-        (src, tgt) for src in g.nodes() for tgt in g.nodes() if valid_neg_edge(src, tgt)
-    ]
-    return random.sample(possible_neg_edges, k=len(positive_examples))
-
-
-def compute_link_prediction_auc(dataset_name, walk_bias, initial_edge_bias, context_window_size):
-    dataset = get_dataset(dataset_name)
-    full_graph, edges = dataset.load()
-
-    num_edges_graph = int(len(edges) * (1 - TRAIN_SUBSET))
-
-    edges_graph = edges[:num_edges_graph]
-    edges_other = edges[num_edges_graph:]
-
-    edges_list_graph = [(int(row[0]), int(row[1]), row[2]) for row in edges_graph.to_numpy()]
-
-    edges_train, edges_test = train_test_split(edges_other, test_size=TEST_SUBSET)
-
-    graph = StellarGraph(
-        nodes=pd.DataFrame(index=full_graph.nodes()),
-        edges=edges_graph,
-        edge_weight_column="time",
-    )
-
-    pos, neg = positive_and_negative_links(graph, edges_train)
-    pos_test, neg_test = positive_and_negative_links(graph, edges_test)
-
-    num_cw = len(graph.nodes()) * NUM_WALKS_PER_NODE * (WALK_LENGTH - context_window_size + 1)
-
-    temporal_walk_old_start_time = time.time()
-    temporal_rw = TemporalRandomWalk(graph)
-    temporal_walks_old = temporal_rw.run(
-        num_cw=num_cw,
-        cw_size=context_window_size,
-        max_walk_length=WALK_LENGTH,
-        walk_bias=walk_bias.lower(),
-    )
-    temporal_walk_old_time = time.time() - temporal_walk_old_start_time
-
-    temporal_walk_lens_old = [len(walk) for walk in temporal_walks_old]
-    walk_len_attrs_old = (
-        np.min(temporal_walk_lens_old),
-        np.max(temporal_walk_lens_old),
-        np.mean(temporal_walk_lens_old),
-        np.median(temporal_walk_lens_old),
-        np.std(temporal_walk_lens_old)
-    )
-
-    temporal_walk_new_start_time = time.time()
-    temporal_walk = TemporalWalk(is_directed=False)
-    temporal_walk.add_multiple_edges(edges_list_graph)
-    temporal_walks = temporal_walk.get_random_walks(
-        max_walk_len=WALK_LENGTH,
-        walk_bias=walk_bias,
-        num_cw=num_cw,
-        initial_edge_bias=initial_edge_bias,
-        walk_direction="Forward_In_Time",
-        walk_init_edge_time_bias="Bias_Earliest_Time",
-        context_window_len=context_window_size
-    )
-    temporal_walks_new = [[str(node) for node in walk] for walk in temporal_walks]
-    temporal_walk_new_time = time.time() - temporal_walk_new_start_time
-
-    temporal_walk_lens_new = [len(walk) for walk in temporal_walks_new]
-    walk_len_attrs_new = (
-        np.min(temporal_walk_lens_new),
-        np.max(temporal_walk_lens_new),
-        np.mean(temporal_walk_lens_new),
-        np.median(temporal_walk_lens_new),
-        np.std(temporal_walk_lens_new)
-    )
-
-    static_rw = BiasedRandomWalk(graph)
-    static_walks = static_rw.run(
-        nodes=graph.nodes(), n=NUM_WALKS_PER_NODE, length=WALK_LENGTH
-    )
-
-    temporal_model_old = Word2Vec(
-        temporal_walks_old,
-        vector_size=EMBEDDING_SIZE,
-        window=context_window_size,
-        min_count=0,
-        sg=1,
-        workers=2,
-        epochs=1,
-    )
-    temporal_model_new = Word2Vec(
-        temporal_walks_new,
-        vector_size=EMBEDDING_SIZE,
-        window=context_window_size,
-        min_count=0,
-        sg=1,
-        workers=2,
-        epochs=1,
-    )
-
-    static_model = Word2Vec(
-        static_walks,
-        vector_size=EMBEDDING_SIZE,
-        window=context_window_size,
-        min_count=0,
-        sg=1,
-        workers=2,
-        epochs=1,
-    )
-
-    unseen_node_embedding = np.zeros(EMBEDDING_SIZE)
-
-    def temporal_embedding(is_new):
-        def get_for_node(u):
-            try:
-                if is_new:
-                    return temporal_model_new.wv[u]
-                else:
-                    return temporal_model_old.wv[u]
-            except KeyError:
-                return unseen_node_embedding
-        return get_for_node
-
-    def static_embedding(u):
-        return static_model.wv[u]
-
-    def operator_l2(u, v):
-        return (u - v) ** 2
-
-    binary_operator = operator_l2
-
-    def link_examples_to_features(link_examples, transform_node):
-        op_func = (
-            operator_func[binary_operator]
-            if isinstance(binary_operator, str)
-            else binary_operator
-        )
-        return [
-            op_func(transform_node(src), transform_node(dst)) for src, dst in link_examples
-        ]
-
-    def link_prediction_classifier(max_iter=2000):
-        lr_clf = LogisticRegressionCV(Cs=10, cv=10, scoring="roc_auc", max_iter=max_iter)
-        return Pipeline(steps=[("sc", StandardScaler()), ("clf", lr_clf)])
-
-    def evaluate_roc_auc(clf, link_features, link_labels):
-        predicted = clf.predict_proba(link_features)
-
-        # check which class corresponds to positive links
-        positive_column = list(clf.classes_).index(1)
-        return roc_auc_score(link_labels, predicted[:, positive_column])
-
-    def labelled_links(positive_examples, negative_examples):
-        return (
-            positive_examples + negative_examples,
-            np.repeat([1, 0], [len(positive_examples), len(negative_examples)]),
-        )
-
-    link_examples, link_labels = labelled_links(pos, neg)
-    link_examples_test, link_labels_test = labelled_links(pos_test, neg_test)
-
-    temporal_link_features_old = link_examples_to_features(link_examples, temporal_embedding(False))
-    temporal_link_features_test_old = link_examples_to_features(link_examples_test, temporal_embedding(False))
-    temporal_clf_old = link_prediction_classifier()
-    temporal_clf_old.fit(temporal_link_features_old, link_labels)
-    temporal_score_old = evaluate_roc_auc(
-        temporal_clf_old, temporal_link_features_test_old, link_labels_test
-    )
-    print(f"Score Temporal - Old: {temporal_score_old:.2f}")
-
-    temporal_link_features_new = link_examples_to_features(link_examples, temporal_embedding(True))
-    temporal_link_features_test_new = link_examples_to_features(link_examples_test, temporal_embedding(True))
-    temporal_clf_new = link_prediction_classifier()
-    temporal_clf_new.fit(temporal_link_features_new, link_labels)
-    temporal_score_new = evaluate_roc_auc(
-        temporal_clf_new, temporal_link_features_test_new, link_labels_test
-    )
-    print(f"Score Temporal - New: {temporal_score_new:.2f}")
-
-    static_clf = link_prediction_classifier()
-    static_link_features = link_examples_to_features(link_examples, static_embedding)
-    static_link_features_test = link_examples_to_features(
-        link_examples_test, static_embedding
-    )
-    static_clf.fit(static_link_features, link_labels)
-    static_score = evaluate_roc_auc(static_clf, static_link_features_test, link_labels_test)
-    print(f"Score Static: {static_score:.2f}")
-
-    return {
-        'auc_static': static_score,
-        'auc_temporal_old': temporal_score_old,
-        'auc_temporal_new': temporal_score_new,
-        'temporal_walk_old_time': temporal_walk_old_time,
-        'temporal_walk_new_time': temporal_walk_new_time,
-        'walk_len_attrs_old': walk_len_attrs_old,
-        'walk_len_attrs_new': walk_len_attrs_new
-    }
-
-
-def select_context_window_size(dataset, walk_bias, initial_edge_bias):
-    temporal_auc_values_old = []
-    temporal_auc_values_new = []
-
-    for c_size in range(START_CONTEXT_WINDOW_SIZE, END_CONTEXT_WINDOW_SIZE + 1):
-        temporal_auc_old_trials = []
-        temporal_auc_new_trials = []
-
-        success = True
-
-        for _trial in range(3):
-            try:
-                result = compute_link_prediction_auc(
-                    dataset,
-                    walk_bias,
-                    initial_edge_bias,
-                    c_size
-                )
-                temporal_auc_old_trials.append(round(result["auc_temporal_old"] * 100))
-                temporal_auc_new_trials.append(round(result["auc_temporal_new"] * 100))
-            except Exception as e:
-                success = False
-                break
-
-        if not success:
-            break
-
-        temporal_auc_values_old.append(round(np.mean(temporal_auc_old_trials)))
-        temporal_auc_values_new.append(round(np.mean(temporal_auc_new_trials)))
-
-    highest_auc_old_idx = len(temporal_auc_values_old) - 1 - np.argmax(temporal_auc_values_old[::-1])
-    highest_auc_new_idx = len(temporal_auc_values_new) - 1 - np.argmax(temporal_auc_values_new[::-1])
-
-    highest_auc_old_value = np.max(temporal_auc_values_old)
-    highest_auc_new_value = np.max(temporal_auc_values_new)
-
-    mean_auc_old = np.mean(temporal_auc_values_old)
-    mean_auc_new = np.mean(temporal_auc_values_new)
-
-    if highest_auc_new_value > mean_auc_new:
-        most_significant_idx = highest_auc_new_idx
-    elif highest_auc_old_value > mean_auc_old:
-        most_significant_idx = highest_auc_old_idx
-    else:
-        most_significant_idx = highest_auc_new_idx
-
-    selected_context_window_size = START_CONTEXT_WINDOW_SIZE + most_significant_idx
-    return selected_context_window_size
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Temporal link prediction.")
-
-    # Add arguments to the parser
+def main():
+    parser = argparse.ArgumentParser(description="Temporal Link Prediction Comparison")
     parser.add_argument('--dataset', type=str, required=True)
     parser.add_argument('--walk_bias', type=str, default="Exponential")
     parser.add_argument('--initial_edge_bias', type=str, default="Uniform")
-    parser.add_argument('--n_runs', type=int, default=7)
+    parser.add_argument('--p', type=float, default=1.0, help='Return parameter for node2vec')
+    parser.add_argument('--q', type=float, default=1.0, help='In-out parameter for node2vec')
+    parser.add_argument('--n_runs', type=int, default=12)
     parser.add_argument('--context_window_size', type=int, default=-1)
 
     args = parser.parse_args()
 
-    if args.context_window_size == -1:
-        context_window_size = select_context_window_size(args.dataset, args.walk_bias, args.initial_edge_bias)
-        print(f'------------------------\nDerived context window size: {context_window_size}\n------------------------')
-    else:
-        context_window_size = args.context_window_size
-        print(f'------------------------\nPassed context window size: {context_window_size}\n------------------------')
 
-    auc_statics = []
-    auc_temporal_olds = []
-    auc_temporal_news = []
-    temporal_walk_old_times = []
-    temporal_walk_new_times = []
+    dataset = get_dataset(args.dataset)
+    graph, edges = dataset.load()
 
-    min_walk_lens_old = []
-    max_walk_lens_old = []
-    mean_walk_lens_old = []
-    median_walk_lens_old = []
-    std_walk_lens_old = []
+    context_window = DEFAULT_CONTEXT_WINDOW_SIZE if args.context_window_size == -1 else args.context_window_size
 
-    min_walk_lens_new = []
-    max_walk_lens_new = []
-    mean_walk_lens_new = []
-    median_walk_lens_new = []
-    std_walk_lens_new = []
-
-    for _ in range(args.n_runs):
-        result = compute_link_prediction_auc(
-            args.dataset,
-            args.walk_bias,
-            args.initial_edge_bias,
-            context_window_size
-        )
-
-        auc_statics.append(result["auc_static"])
-        auc_temporal_olds.append(result["auc_temporal_old"])
-        auc_temporal_news.append(result["auc_temporal_new"])
-        temporal_walk_old_times.append(result["temporal_walk_old_time"])
-        temporal_walk_new_times.append(result["temporal_walk_new_time"])
-
-        min_walk_len_old, max_walk_len_old, mean_walk_len_old, median_walk_len_old, std_walk_len_old = result["walk_len_attrs_old"]
-        min_walk_len_new, max_walk_len_new, mean_walk_len_new, median_walk_len_new, std_walk_len_new = result["walk_len_attrs_new"]
-
-        min_walk_lens_old.append(min_walk_len_old)
-        max_walk_lens_old.append(max_walk_len_old)
-        mean_walk_lens_old.append(mean_walk_len_old)
-        median_walk_lens_old.append(median_walk_len_old)
-        std_walk_lens_old.append(std_walk_len_old)
-
-        min_walk_lens_new.append(min_walk_len_new)
-        max_walk_lens_new.append(max_walk_len_new)
-        mean_walk_lens_new.append(mean_walk_len_new)
-        median_walk_lens_new.append(median_walk_len_new)
-        std_walk_lens_new.append(std_walk_len_new)
-
-    combined_result = {
-        'auc_static': auc_statics,
-        'auc_temporal_old': auc_temporal_olds,
-        'auc_temporal_new': auc_temporal_news,
-        'temporal_walk_old_time': temporal_walk_old_times,
-        'temporal_walk_new_time': temporal_walk_new_times,
-        'min_walk_len_old': min_walk_lens_old,
-        'max_walk_len_old': max_walk_lens_old,
-        'mean_walk_len_old': mean_walk_lens_old,
-        'median_walk_len_old': median_walk_lens_old,
-        'std_walk_len_old': std_walk_lens_old,
-        'min_walk_len_new': min_walk_lens_new,
-        'max_walk_len_new': max_walk_lens_new,
-        'mean_walk_len_new': mean_walk_lens_new,
-        'median_walk_len_new': median_walk_lens_new,
-        'std_walk_len_new': std_walk_lens_new
+    # Setup parameters
+    params = {
+        'embedding_size': EMBEDDING_SIZE,
+        'num_walks': NUM_WALKS_PER_NODE,
+        'walk_length': WALK_LENGTH,
+        'context_window': context_window,
+        'walk_bias': args.walk_bias,
+        'initial_edge_bias': args.initial_edge_bias,
+        'p': args.p,
+        'q': args.q
     }
 
-    pickle.dump(combined_result, open(f"save/{args.dataset}_{args.walk_bias}_{args.initial_edge_bias}_{context_window_size}.pkl", "wb"))
+    predictor = TemporalLinkPredictor(params)
 
-    print(f"Auc Static: {np.mean(auc_statics)}")
-    print(f"Auc Temporal (Old): {np.mean(auc_temporal_olds)}")
-    print(f"Auc Temporal (New): {np.mean(auc_temporal_news)}")
-    print(f"Temporal walk sampling time (Old): {np.mean(temporal_walk_old_times)}")
-    print(f"Temporal walk sampling time (New): {np.mean(temporal_walk_new_times)}")
+    # Run multiple trials
+    all_results = []
+    for run in range(args.n_runs):
+        print(f"\nRun {run + 1}/{args.n_runs}")
+        results = predictor.run_evaluation(graph, edges, run)
+        all_results.append(results)
 
-    print(f"Old walk len: min {np.mean(min_walk_lens_old)}, max {np.mean(max_walk_lens_old)}, mean {np.mean(mean_walk_lens_old)}, median {np.mean(median_walk_lens_old)}, std {np.mean(std_walk_lens_old)}")
-    print(f"New walk len: min {np.mean(min_walk_lens_new)}, max {np.mean(max_walk_lens_new)}, mean {np.mean(mean_walk_lens_new)}, median {np.mean(median_walk_lens_new)}, std {np.mean(std_walk_lens_new)}")
+        # Print current results
+        print("AUC Scores:")
+        print(f"New Temporal: {results['new_temporal']['auc']:.4f} (time: {results['new_temporal']['time']:.2f}s)")
+        print(f"Old Temporal: {results['old_temporal']['auc']:.4f} (time: {results['old_temporal']['time']:.2f}s)")
+        print(f"Node2Vec: {results['node2vec']['auc']:.4f} (time: {results['node2vec']['time']:.2f}s)")
+
+    # Organize raw results
+    raw_results = {
+        'params': params,
+        'metrics': {
+            'new_temporal': {
+                'auc_scores': [r['new_temporal']['auc'] for r in all_results],
+                'walk_times': [r['new_temporal']['time'] for r in all_results]
+            },
+            'old_temporal': {
+                'auc_scores': [r['old_temporal']['auc'] for r in all_results],
+                'walk_times': [r['old_temporal']['time'] for r in all_results]
+            },
+            'node2vec': {
+                'auc_scores': [r['node2vec']['auc'] for r in all_results],
+                'walk_times': [r['node2vec']['time'] for r in all_results]
+            }
+        }
+    }
+
+    # Save raw results
+    with open(f'save/{args.dataset}_{args.walk_bias}_{args.initial_edge_bias}_{context_window}.pkl', 'wb') as f:
+        pickle.dump(raw_results, f)
+
+    # Print summary statistics
+    print("\nFinal Results:")
+    for method in ['new_temporal', 'old_temporal', 'node2vec']:
+        auc_scores = raw_results['metrics'][method]['auc_scores']
+        walk_times = raw_results['metrics'][method]['walk_times']
+
+        print(f"{method}:")
+        print(f"  AUC: {np.mean(auc_scores):.4f} ± {np.std(auc_scores):.4f}")
+        print(f"  Walk Time: {np.mean(walk_times):.2f}s ± {np.std(walk_times):.2f}s")
+
+
+if __name__ == "__main__":
+    main()

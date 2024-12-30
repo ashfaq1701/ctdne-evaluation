@@ -209,12 +209,12 @@ class WikiElections:
         edges = pd.DataFrame({
             'source': sources,
             'target': targets,
-            'timestamp': times,
+            'time': times,
             'vote': votes
         })
 
-        edges['timestamp'] = pd.to_numeric(edges['timestamp'].fillna(
-            edges['timestamp'].min()
+        edges['time'] = pd.to_numeric(edges['time'].fillna(
+            edges['time'].min()
         ).astype('int64')) // 10 ** 9
 
         edges[['source', 'target']] = edges[['source', 'target']].astype(str)
@@ -225,7 +225,7 @@ class WikiElections:
             )
         )
 
-        graph = StellarGraph(nodes=nodes, edges=edges, edge_weight_column='timestamp')
+        graph = StellarGraph(nodes=nodes, edges=edges, edge_weight_column='time')
 
         return graph, edges
 
