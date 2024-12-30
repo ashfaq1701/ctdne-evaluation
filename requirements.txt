@@ -1,0 +1,10 @@
+gensim
+jupyter
+matplotlib
+networkx
+node2vec
+numpy
+pandas
+scikit-learn
+scipy
+temporal-walk
