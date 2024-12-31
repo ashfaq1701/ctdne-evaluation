@@ -242,3 +242,21 @@ class WikiElections:
                 data = f.read()
 
         return self.load_from_string(data)
+
+
+class AlibabaData:
+    def load(self):
+        edges_path = resolve_path(
+            'data/data_alibaba.parquet',
+            '../data/data_alibaba.parquet'
+        )
+        edges = pd.read_parquet(edges_path)
+        edges.columns = ["source", "target", "time"]
+
+        nodes = pd.DataFrame(
+            index=np.unique(
+                pd.concat([edges["source"], edges["target"]], ignore_index=True)
+            )
+        )
+
+        return StellarGraph(nodes=nodes, edges=edges, edge_weight_column="time"), edges

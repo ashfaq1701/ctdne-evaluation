@@ -13,7 +13,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 from src.additional_datasets import FBForum, IAContact, IAContactsHypertext2009, IAEmailEU, IARadoslawEmail, \
-    SocSignBitcoinAlpha, WikiElections
+    SocSignBitcoinAlpha, WikiElections, AlibabaData
 from stellargraph import StellarGraph
 from temporal_walk import TemporalWalk
 from stellargraph.data import TemporalRandomWalk, BiasedRandomWalk
@@ -35,8 +35,11 @@ class TemporalLinkPredictor:
             'num_walks': NUM_WALKS_PER_NODE,
             'walk_length': WALK_LENGTH,
             'context_window': DEFAULT_CONTEXT_WINDOW_SIZE,
-            'walk_bias': 'exponential',
-            'initial_edge_bias': 'uniform'
+            'walk_bias': 'Exponential',
+            'initial_edge_bias': 'Uniform',
+            'edge_operator': 'all',
+            'weight_node2vec': False,
+            'is_directed': False
         }
 
     @staticmethod
@@ -48,7 +51,7 @@ class TemporalLinkPredictor:
 
     def generate_new_temporal_walks(self, edges_list: List, num_cw: int) -> List[List[str]]:
         """Generate walks using new temporal walk method"""
-        temporal_walk = TemporalWalk(is_directed=False)
+        temporal_walk = TemporalWalk(is_directed=self.embedding_params['is_directed'])
 
         temporal_walk.add_multiple_edges(edges_list)
         walks = temporal_walk.get_random_walks(
@@ -177,7 +180,8 @@ class TemporalLinkPredictor:
         train_graph = StellarGraph(
             nodes=pd.DataFrame(index=graph.nodes()),
             edges=train_edges,
-            edge_weight_column="time"
+            edge_weight_column="time",
+            is_directed=self.embedding_params['is_directed']
         )
 
         # Prepare test data
@@ -190,14 +194,22 @@ class TemporalLinkPredictor:
         edges_list = [(int(row[0]), int(row[1]), row[2]) for row in train_edges.to_numpy()]
 
         # Generate networkx graph for node2vec
-        graph = nx.Graph()
+        graph = nx.Graph() if not self.embedding_params['is_directed'] else nx.DiGraph()
         for _, row in train_edges.iterrows():
-            graph.add_edge(row["source"], row["target"], time=row["time"])
+            if self.embedding_params['weighted_node2vec']:
+                graph.add_edge(row["source"], row["target"], time=row["time"])
+            else:
+                graph.add_edge(row["source"], row["target"])
 
         results = {}
 
+
         operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
-        selected_operator = operators[run_number % len(operators)]
+
+        if self.embedding_params['edge_operator'] == 'all':
+            selected_operator = operators[run_number % len(operators)]
+        else:
+            selected_operator = self.embedding_params['edge_operator']
 
         # 1. New Temporal Walk
         start_time = time.time()
@@ -252,6 +264,8 @@ def get_dataset(dataset_name):
         return SocSignBitcoinAlpha()
     elif dataset_name == 'wiki_elections':
         return WikiElections()
+    elif dataset_name == 'alibaba':
+        return AlibabaData()
     else:
         raise ValueError(f'Invalid dataset name {dataset_name}')
 
@@ -265,6 +279,9 @@ def main():
     parser.add_argument('--q', type=float, default=1.0, help='In-out parameter for node2vec')
     parser.add_argument('--n_runs', type=int, default=12)
     parser.add_argument('--context_window_size', type=int, default=-1)
+    parser.add_argument('--edge_operator', type=str, default='all')
+    parser.add_argument('--weighted_node2vec', action='store_true', help='Whether to run weighted node2vec')
+    parser.add_argument('--directed', action='store_true', help='Is a directed dataset')
 
     args = parser.parse_args()
 
@@ -283,7 +300,10 @@ def main():
         'walk_bias': args.walk_bias,
         'initial_edge_bias': args.initial_edge_bias,
         'p': args.p,
-        'q': args.q
+        'q': args.q,
+        'edge_operator': args.edge_operator,
+        'weighted_node2vec': args.weighted_node2vec,
+        'is_directed': args.directed
     }
 
     predictor = TemporalLinkPredictor(params)
@@ -320,8 +340,11 @@ def main():
         }
     }
 
+
+    node2vec_type = 'weighted' if args.weighted_node2vec else 'unweighted'
+    directed_suffix = 'directed' if args.directed else 'undirected'
     # Save raw results
-    with open(f'save/{args.dataset}_{args.walk_bias}_{args.initial_edge_bias}_{context_window}.pkl', 'wb') as f:
+    with open(f'save/{args.dataset}_{args.walk_bias}_{args.initial_edge_bias}_{context_window}_{node2vec_type}_{args.edge_operator}_{directed_suffix}.pkl', 'wb') as f:
         pickle.dump(raw_results, f)
 
     # Print summary statistics
