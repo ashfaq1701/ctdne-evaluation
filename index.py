@@ -49,19 +49,17 @@ class TemporalLinkPredictor:
         n_train = int(len(edges_sorted) * TRAIN_RATIO)
         return edges_sorted[:n_train], edges_sorted[n_train:]
 
-    def generate_new_temporal_walks(self, edges_list: List, num_cw: int) -> List[List[str]]:
+    def generate_new_temporal_walks(self, edges_list: List) -> List[List[str]]:
         """Generate walks using new temporal walk method"""
         temporal_walk = TemporalWalk(is_directed=self.embedding_params['is_directed'])
 
         temporal_walk.add_multiple_edges(edges_list)
-        walks = temporal_walk.get_random_walks(
+        walks = temporal_walk.get_random_walks_for_all_nodes(
             max_walk_len=self.embedding_params['walk_length'],
             walk_bias=self.embedding_params['walk_bias'],
-            num_cw=num_cw,
+            num_walks_per_node=self.embedding_params['num_walks'],
             initial_edge_bias=self.embedding_params['initial_edge_bias'],
-            walk_direction="Forward_In_Time",
-            walk_init_edge_time_bias="Bias_Earliest_Time",
-            context_window_len=self.embedding_params['context_window']
+            walk_direction="Forward_In_Time"
         )
         return [[str(node) for node in walk] for walk in walks]
 
@@ -213,7 +211,7 @@ class TemporalLinkPredictor:
 
         # 1. New Temporal Walk
         start_time = time.time()
-        new_temporal_walks = self.generate_new_temporal_walks(edges_list, num_cw)
+        new_temporal_walks = self.generate_new_temporal_walks(edges_list)
         new_temporal_walk_sampling_time = time.time() - start_time
         new_model = self.learn_embeddings(new_temporal_walks)
         new_features = self.compute_edge_features(test_edges_list, new_model, selected_operator)

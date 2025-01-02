@@ -1150,7 +1150,7 @@ class TemporalRandomWalk(GraphWalk):
         return probabilities
 
     def _temporal_biases(self, times, time, bias_type, is_forward):
-        if bias_type is None:
+        if bias_type is None or bias_type == 'uniform':
             # default to uniform random sampling
             return None
 
