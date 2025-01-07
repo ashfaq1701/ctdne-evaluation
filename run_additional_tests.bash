@@ -1,44 +1,29 @@
-python index.py --dataset ia_contact --walk_bias Uniform --initial_edge_bias Uniform --weighted_node2vec
-python index.py --dataset ia_contacts_hypertext_2009 --walk_bias Uniform --initial_edge_bias Uniform --weighted_node2vec
-python index.py --dataset ia_enron_employees --walk_bias Uniform --initial_edge_bias Uniform --weighted_node2vec
-python index.py --dataset ia_radoslaw_email --walk_bias Uniform --initial_edge_bias Uniform --weighted_node2vec
+#!/bin/bash
 
-python index.py --dataset ia_contact --walk_bias Linear --initial_edge_bias Uniform --weighted_node2vec
-python index.py --dataset ia_contacts_hypertext_2009 --walk_bias Linear --initial_edge_bias Uniform --weighted_node2vec
-python index.py --dataset ia_enron_employees --walk_bias Linear --initial_edge_bias Uniform --weighted_node2vec
-python index.py --dataset ia_radoslaw_email --walk_bias Linear --initial_edge_bias Uniform --weighted_node2vec
+# Check if --weighted_node2vec flag is passed
+WEIGHTED_FLAG=""
+if [[ "$*" == *--weighted_node2vec* ]]; then
+  WEIGHTED_FLAG="--weighted_node2vec"
+fi
 
-python index.py --dataset ia_contact --walk_bias Uniform --initial_edge_bias Linear --weighted_node2vec
-python index.py --dataset ia_contacts_hypertext_2009 --walk_bias Uniform --initial_edge_bias Linear --weighted_node2vec
-python index.py --dataset ia_enron_employees --walk_bias Uniform --initial_edge_bias Linear --weighted_node2vec
-python index.py --dataset ia_radoslaw_email --walk_bias Uniform --initial_edge_bias Linear --weighted_node2vec
+# Define datasets
+DATASETS=(
+  ia_contact
+  ia_contacts_hypertext_2009
+  ia_enron_employees
+  ia_radoslaw_email
+)
 
-python index.py --dataset ia_contact --walk_bias Linear --initial_edge_bias Linear --weighted_node2vec
-python index.py --dataset ia_contacts_hypertext_2009 --walk_bias Linear --initial_edge_bias Linear --weighted_node2vec
-python index.py --dataset ia_enron_employees --walk_bias Linear --initial_edge_bias Linear --weighted_node2vec
-python index.py --dataset ia_radoslaw_email --walk_bias Linear --initial_edge_bias Linear --weighted_node2vec
+# Define walk biases and initial edge biases
+WALK_BIASES=(Uniform Linear)
+INIT_EDGE_BIASES=(Uniform Linear)
 
-
-
-python index.py --dataset ia_contact --walk_bias Uniform --initial_edge_bias Uniform --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_contacts_hypertext_2009 --walk_bias Uniform --initial_edge_bias Uniform --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_enron_employees --walk_bias Uniform --initial_edge_bias Uniform --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_radoslaw_email --walk_bias Uniform --initial_edge_bias Uniform --edge_operator hadamard --weighted_node2vec
-
-python index.py --dataset ia_contact --walk_bias Linear --initial_edge_bias Uniform --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_contacts_hypertext_2009 --walk_bias Linear --initial_edge_bias Uniform --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_enron_employees --walk_bias Linear --initial_edge_bias Uniform --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_radoslaw_email --walk_bias Linear --initial_edge_bias Uniform --edge_operator hadamard --weighted_node2vec
-
-python index.py --dataset ia_contact --walk_bias Uniform --initial_edge_bias Linear --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_contacts_hypertext_2009 --walk_bias Uniform --initial_edge_bias Linear --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_enron_employees --walk_bias Uniform --initial_edge_bias Linear --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_radoslaw_email --walk_bias Uniform --initial_edge_bias Linear --edge_operator hadamard --weighted_node2vec
-
-python index.py --dataset ia_contact --walk_bias Linear --initial_edge_bias Linear --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_contacts_hypertext_2009 --walk_bias Linear --initial_edge_bias Linear --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_enron_employees --walk_bias Linear --initial_edge_bias Linear --edge_operator hadamard --weighted_node2vec
-python index.py --dataset ia_radoslaw_email --walk_bias Linear --initial_edge_bias Linear --edge_operator hadamard --weighted_node2vec
-
-
-
+# Loop through combinations and execute commands
+for DATASET in "${DATASETS[@]}"; do
+  for WALK_BIAS in "${WALK_BIASES[@]}"; do
+    for INIT_EDGE_BIAS in "${INIT_EDGE_BIASES[@]}"; do
+      python index.py --dataset $DATASET --walk_bias $WALK_BIAS --initial_edge_bias $INIT_EDGE_BIAS $WEIGHTED_FLAG
+      python index.py --dataset $DATASET --walk_bias $WALK_BIAS --initial_edge_bias $INIT_EDGE_BIAS --edge_operator hadamard $WEIGHTED_FLAG
+    done
+  done
+done
