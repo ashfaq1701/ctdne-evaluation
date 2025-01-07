@@ -157,8 +157,7 @@ class TemporalLinkPredictor:
         features_scaled = scaler.fit_transform(features)
 
         clf = LogisticRegressionCV(
-            Cs=10,
-            cv=10,
+            cv=3,
             scoring="roc_auc",
             n_jobs=-1,
             max_iter=1000,
