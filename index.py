@@ -30,17 +30,7 @@ WORKERS=4
 
 class TemporalLinkPredictor:
     def __init__(self, embedding_params: Dict[str, Any] = None):
-        self.embedding_params = embedding_params or {
-            'embedding_size': EMBEDDING_SIZE,
-            'num_walks': NUM_WALKS_PER_NODE,
-            'walk_length': WALK_LENGTH,
-            'context_window': DEFAULT_CONTEXT_WINDOW_SIZE,
-            'walk_bias': 'Exponential',
-            'initial_edge_bias': 'Uniform',
-            'edge_operator': 'all',
-            'weight_node2vec': False,
-            'is_directed': False
-        }
+        self.embedding_params = embedding_params
 
     @staticmethod
     def split_edges_temporal(edges: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
