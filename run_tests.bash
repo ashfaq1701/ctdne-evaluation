@@ -18,12 +18,12 @@ DATASETS=(
   wiki_elections
 )
 
-EDGE_OPERATORS="all"
+EDGE_OPERATOR="best"
 if [[ -n "$1" ]]; then
-  EDGE_OPERATORS="$1"
+  EDGE_OPERATOR="$1"
 fi
 
 # Loop through datasets and execute commands
 for DATASET in "${DATASETS[@]}"; do
-  python index.py --dataset $DATASET --walk_bias Exponential --initial_edge_bias Uniform --edge_operator $EDGE_OPERATORS $WEIGHTED_FLAG
+  python index.py --dataset $DATASET --walk_bias Exponential --initial_edge_bias Uniform --edge_operator $EDGE_OPERATOR $WEIGHTED_FLAG
 done

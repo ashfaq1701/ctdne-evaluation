@@ -25,6 +25,7 @@ NUM_WALKS_PER_NODE = 10
 WALK_LENGTH = 80
 DEFAULT_CONTEXT_WINDOW_SIZE = 10
 TRAIN_RATIO = 0.75
+BEST_EDGE_OPERATOR_SELECTOR_N_RUNS = 3
 WORKERS=4
 
 
@@ -158,7 +159,7 @@ class TemporalLinkPredictor:
         predictions = clf.predict_proba(features_scaled)
         return roc_auc_score(labels, predictions[:, 1])
 
-    def run_evaluation(self, graph: StellarGraph, edges: pd.DataFrame, run_number) -> Dict[str, Any]:
+    def run_evaluation(self, graph: StellarGraph, edges: pd.DataFrame) -> Dict[str, Any]:
         """Run complete evaluation for all three methods"""
         # Split edges
         train_edges, test_edges = self.split_edges_temporal(edges)
@@ -190,20 +191,14 @@ class TemporalLinkPredictor:
 
         results = {}
 
-
-        if self.embedding_params['edge_operator'] == 'all':
-            operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
-        else:
-            operators = self.embedding_params['edge_operator'].split('|')
-
-        selected_operator = operators[run_number % len(operators)]
+        new_temporal_edge_op, old_temporal_edge_op, node2vec_edge_op = self.embedding_params['edge_operators']
 
         # 1. New Temporal Walk
         start_time = time.time()
         new_temporal_walks = self.generate_new_temporal_walks(edges_list)
         new_temporal_walk_sampling_time = time.time() - start_time
         new_model = self.learn_embeddings(new_temporal_walks)
-        new_features = self.compute_edge_features(test_edges_list, new_model, selected_operator)
+        new_features = self.compute_edge_features(test_edges_list, new_model, new_temporal_edge_op)
         new_auc = self.evaluate_embeddings(new_features, labels)
         results['new_temporal'] = {
             'auc': new_auc,
@@ -215,7 +210,7 @@ class TemporalLinkPredictor:
         old_temporal_walks = self.generate_old_temporal_walks(train_graph, num_cw)
         old_temporal_walk_sampling_time = time.time() - start_time
         old_model = self.learn_embeddings(old_temporal_walks)
-        old_features = self.compute_edge_features(test_edges_list, old_model, selected_operator)
+        old_features = self.compute_edge_features(test_edges_list, old_model, old_temporal_edge_op)
         old_auc = self.evaluate_embeddings(old_features, labels)
         results['old_temporal'] = {
             'auc': old_auc,
@@ -224,7 +219,7 @@ class TemporalLinkPredictor:
 
         # 3. Node2Vec
         node2vec_model, node2vec_walk_time = self.train_node2vec_model(graph)
-        node2vec_features = self.compute_edge_features(test_edges_list, node2vec_model, selected_operator)
+        node2vec_features = self.compute_edge_features(test_edges_list, node2vec_model, node2vec_edge_op)
         node2vec_auc = self.evaluate_embeddings(node2vec_features, labels)
         results['node2vec'] = {
             'auc': node2vec_auc,
@@ -257,6 +252,46 @@ def get_dataset(dataset_name):
         raise ValueError(f'Invalid dataset name {dataset_name}')
 
 
+def find_best_edge_operators(args, context_window, graph, edges):
+    edge_operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
+    new_temporal_aucs = []
+    old_temporal_aucs = []
+    node2vec_aucs = []
+
+    for edge_operator in edge_operators:
+        new_temporal_aucs_for_op = []
+        old_temporal_aucs_for_op = []
+        node2vec_aucs_for_op = []
+
+        params = {
+            'embedding_size': EMBEDDING_SIZE,
+            'num_walks': NUM_WALKS_PER_NODE,
+            'walk_length': WALK_LENGTH,
+            'context_window': context_window,
+            'walk_bias': args.walk_bias,
+            'initial_edge_bias': args.initial_edge_bias,
+            'p': args.p,
+            'q': args.q,
+            'edge_operators': (edge_operator, edge_operator, edge_operator),
+            'weighted_node2vec': args.weighted_node2vec,
+            'is_directed': args.directed
+        }
+
+        for _ in range(BEST_EDGE_OPERATOR_SELECTOR_N_RUNS):
+            predictor = TemporalLinkPredictor(params)
+            results = predictor.run_evaluation(graph, edges)
+            new_temporal_aucs_for_op.append(results['new_temporal']['auc'])
+            old_temporal_aucs_for_op.append(results['old_temporal']['auc'])
+            node2vec_aucs_for_op.append(results['node2vec']['auc'])
+
+        new_temporal_aucs.append(np.mean(new_temporal_aucs_for_op))
+        old_temporal_aucs.append(np.mean(old_temporal_aucs_for_op))
+        node2vec_aucs.append(np.mean(node2vec_aucs_for_op))
+
+        print(f'{edge_operator} - new_temporal: {np.mean(new_temporal_aucs_for_op)}, old_temporal: {np.mean(old_temporal_aucs_for_op)}, node2vec: {np.mean(node2vec_aucs_for_op)}')
+
+    return edge_operators[np.argmax(new_temporal_aucs)], edge_operators[np.argmax(old_temporal_aucs)], edge_operators[np.argmax(node2vec_aucs)]
+
 def main():
     parser = argparse.ArgumentParser(description="Temporal Link Prediction Comparison")
     parser.add_argument('--dataset', type=str, required=True)
@@ -266,8 +301,8 @@ def main():
     parser.add_argument('--q', type=float, default=1.0, help='In-out parameter for node2vec')
     parser.add_argument('--n_runs', type=int, default=12)
     parser.add_argument('--context_window_size', type=int, default=-1)
-    parser.add_argument('--edge_operator', type=str, default='all')
     parser.add_argument('--weighted_node2vec', action='store_true', help='Whether to run weighted node2vec')
+    parser.add_argument('--edge_operator', type=str, default='best')
     parser.add_argument('--directed', action='store_true', help='Is a directed dataset')
 
     args = parser.parse_args()
@@ -277,6 +312,12 @@ def main():
     graph, edges = dataset.load()
 
     context_window = DEFAULT_CONTEXT_WINDOW_SIZE if args.context_window_size == -1 else args.context_window_size
+    if args.edge_operator == 'best':
+        edge_operators = find_best_edge_operators(args, context_window, graph, edges)
+    else:
+        edge_operators = (args.edge_operator, args.edge_operator, args.edge_operator)
+
+    print(f"Best Edge Operators:\nNew Temporal: {edge_operators[0]}\nOld Temporal: {edge_operators[1]}\nNode2Vec: {edge_operators[2]}")
 
     # Setup parameters
     params = {
@@ -288,7 +329,7 @@ def main():
         'initial_edge_bias': args.initial_edge_bias,
         'p': args.p,
         'q': args.q,
-        'edge_operator': args.edge_operator,
+        'edge_operators': edge_operators,
         'weighted_node2vec': args.weighted_node2vec,
         'is_directed': args.directed
     }
@@ -299,7 +340,7 @@ def main():
     all_results = []
     for run in range(args.n_runs):
         print(f"\nRun {run + 1}/{args.n_runs}")
-        results = predictor.run_evaluation(graph, edges, run)
+        results = predictor.run_evaluation(graph, edges)
         all_results.append(results)
 
         # Print current results
