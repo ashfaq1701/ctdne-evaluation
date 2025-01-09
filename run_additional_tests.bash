@@ -14,6 +14,11 @@ DATASETS=(
   ia_radoslaw_email
 )
 
+EDGE_OPERATORS="all"
+if [[ -n "$1" ]]; then
+  EDGE_OPERATORS="$1"
+fi
+
 # Define walk biases and initial edge biases
 WALK_BIASES=(Uniform Linear)
 INIT_EDGE_BIASES=(Uniform Linear)
@@ -22,8 +27,7 @@ INIT_EDGE_BIASES=(Uniform Linear)
 for DATASET in "${DATASETS[@]}"; do
   for WALK_BIAS in "${WALK_BIASES[@]}"; do
     for INIT_EDGE_BIAS in "${INIT_EDGE_BIASES[@]}"; do
-      python index.py --dataset $DATASET --walk_bias $WALK_BIAS --initial_edge_bias $INIT_EDGE_BIAS $WEIGHTED_FLAG
-      python index.py --dataset $DATASET --walk_bias $WALK_BIAS --initial_edge_bias $INIT_EDGE_BIAS --edge_operator hadamard $WEIGHTED_FLAG
+      python index.py --dataset $DATASET --walk_bias $WALK_BIAS --initial_edge_bias $INIT_EDGE_BIAS --edge_operator $EDGE_OPERATORS $WEIGHTED_FLAG
     done
   done
 done

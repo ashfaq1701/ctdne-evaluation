@@ -191,12 +191,12 @@ class TemporalLinkPredictor:
         results = {}
 
 
-        operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
-
         if self.embedding_params['edge_operator'] == 'all':
-            selected_operator = operators[run_number % len(operators)]
+            operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
         else:
-            selected_operator = self.embedding_params['edge_operator']
+            operators = self.embedding_params['edge_operator'].split('|')
+
+        selected_operator = operators[run_number % len(operators)]
 
         # 1. New Temporal Walk
         start_time = time.time()
