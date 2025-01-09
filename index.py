@@ -312,12 +312,16 @@ def main():
     graph, edges = dataset.load()
 
     context_window = DEFAULT_CONTEXT_WINDOW_SIZE if args.context_window_size == -1 else args.context_window_size
+
     if args.edge_operator == 'best':
         edge_operators = find_best_edge_operators(args, context_window, graph, edges)
-    else:
+        print(f"Best Edge Operators:\nNew Temporal: {edge_operators[0]}\nOld Temporal: {edge_operators[1]}\nNode2Vec: {edge_operators[2]}")
+    elif args.edge_operator != 'mean':
         edge_operators = (args.edge_operator, args.edge_operator, args.edge_operator)
+    else:
+        edge_operators = ('mean', 'mean', 'mean')
 
-    print(f"Best Edge Operators:\nNew Temporal: {edge_operators[0]}\nOld Temporal: {edge_operators[1]}\nNode2Vec: {edge_operators[2]}")
+    all_operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
 
     # Setup parameters
     params = {
@@ -334,11 +338,17 @@ def main():
         'is_directed': args.directed
     }
 
-    predictor = TemporalLinkPredictor(params)
-
     # Run multiple trials
     all_results = []
     for run in range(args.n_runs):
+        if args.edge_operator == 'mean':
+            current_operator = all_operators[run % len(all_operators)]
+            current_edge_operators = (current_operator, current_operator, current_operator)
+        else:
+            current_edge_operators = edge_operators
+
+        predictor = TemporalLinkPredictor({**params, 'edge_operators': current_edge_operators})
+
         print(f"\nRun {run + 1}/{args.n_runs}")
         results = predictor.run_evaluation(graph, edges)
         all_results.append(results)
