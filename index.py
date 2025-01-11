@@ -13,7 +13,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 from src.additional_datasets import FBForum, IAContact, IAContactsHypertext2009, IAEmailEU, IARadoslawEmail, \
-    SocSignBitcoinAlpha, WikiElections, AlibabaData
+    SocSignBitcoinAlpha, WikiElections, AlibabaData, FBLinks
 from stellargraph import StellarGraph
 from temporal_walk import TemporalWalk
 from stellargraph.data import TemporalRandomWalk, BiasedRandomWalk
@@ -25,7 +25,7 @@ NUM_WALKS_PER_NODE = 10
 WALK_LENGTH = 80
 DEFAULT_CONTEXT_WINDOW_SIZE = 10
 TRAIN_RATIO = 0.75
-BEST_EDGE_OPERATOR_SELECTOR_N_RUNS = 3
+BEST_EDGE_OPERATOR_SELECTOR_N_RUNS = 2
 WORKERS=4
 
 
@@ -116,6 +116,11 @@ class TemporalLinkPredictor:
         edges = positive_edges + negative_edges
         labels = np.array([1] * len(positive_edges) + [0] * len(negative_edges))
 
+        indices = np.arange(len(edges))
+        np.random.shuffle(indices)
+        edges = [edges[i] for i in indices]
+        labels = labels[indices]
+
         return edges, labels
 
     def compute_edge_features(self, edges: List[Tuple], model: Word2Vec, operator: str) -> np.ndarray:
@@ -147,17 +152,15 @@ class TemporalLinkPredictor:
         scaler = StandardScaler()
         features_scaled = scaler.fit_transform(features)
 
-        clf = LogisticRegressionCV(
-            cv=3,
-            scoring="roc_auc",
-            n_jobs=-1,
-            max_iter=1000,
-            solver='liblinear'
-        )
+        clf = LogisticRegressionCV(cv=3, solver="liblinear", max_iter=1000)
         clf.fit(features_scaled, labels)
 
-        predictions = clf.predict_proba(features_scaled)
-        return roc_auc_score(labels, predictions[:, 1])
+        if self.embedding_params['auc_by_probs']:
+            pred_probs = clf.predict_proba(features_scaled)
+            return roc_auc_score(labels, pred_probs[:, 1])
+        else:
+            predictions = clf.predict(features_scaled)
+            return roc_auc_score(labels, predictions)
 
     def run_evaluation(self, graph: StellarGraph, edges: pd.DataFrame) -> Dict[str, Any]:
         """Run complete evaluation for all three methods"""
@@ -248,6 +251,8 @@ def get_dataset(dataset_name):
         return WikiElections()
     elif dataset_name == 'alibaba':
         return AlibabaData()
+    elif dataset_name == 'fb_links':
+        return FBLinks()
     else:
         raise ValueError(f'Invalid dataset name {dataset_name}')
 
@@ -274,7 +279,8 @@ def find_best_edge_operators(args, context_window, graph, edges):
             'q': args.q,
             'edge_operators': (edge_operator, edge_operator, edge_operator),
             'weighted_node2vec': args.weighted_node2vec,
-            'is_directed': args.directed
+            'is_directed': args.directed,
+            'auc_by_probs': args.auc_by_probs
         }
 
         for _ in range(BEST_EDGE_OPERATOR_SELECTOR_N_RUNS):
@@ -304,6 +310,7 @@ def main():
     parser.add_argument('--weighted_node2vec', action='store_true', help='Whether to run weighted node2vec')
     parser.add_argument('--edge_operator', type=str, default='best')
     parser.add_argument('--directed', action='store_true', help='Is a directed dataset')
+    parser.add_argument('--auc_by_probs', action='store_true', help='Whether to run auc by probabilities')
 
     args = parser.parse_args()
 
@@ -335,7 +342,8 @@ def main():
         'q': args.q,
         'edge_operators': edge_operators,
         'weighted_node2vec': args.weighted_node2vec,
-        'is_directed': args.directed
+        'is_directed': args.directed,
+        'auc_by_probs': args.auc_by_probs
     }
 
     # Run multiple trials
@@ -381,8 +389,10 @@ def main():
 
     node2vec_type = 'weighted' if args.weighted_node2vec else 'unweighted'
     directed_suffix = 'directed' if args.directed else 'undirected'
+    auc_type = 'probs' if args.auc_by_probs else 'preds'
+
     # Save raw results
-    with open(f'save/{args.dataset}_{args.walk_bias}_{args.initial_edge_bias}_{context_window}_{node2vec_type}_{args.edge_operator}_{directed_suffix}.pkl', 'wb') as f:
+    with open(f'save/{args.dataset}_{args.walk_bias}_{args.initial_edge_bias}_{context_window}_{node2vec_type}_{args.edge_operator}_{directed_suffix}_{auc_type}.pkl', 'wb') as f:
         pickle.dump(raw_results, f)
 
     # Print summary statistics

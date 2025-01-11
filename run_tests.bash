@@ -6,6 +6,11 @@ if [[ "$*" == *--weighted_node2vec* ]]; then
   WEIGHTED_FLAG="--weighted_node2vec"
 fi
 
+AUC_BY_PROBS_FLAG=""
+if [[ "$*" == *--auc_by_probs* ]]; then
+  AUC_BY_PROBS_FLAG="--auc_by_probs"
+fi
+
 # Define datasets
 DATASETS=(
   fb_forum
@@ -25,5 +30,5 @@ fi
 
 # Loop through datasets and execute commands
 for DATASET in "${DATASETS[@]}"; do
-  python index.py --dataset $DATASET --walk_bias Exponential --initial_edge_bias Uniform --edge_operator $EDGE_OPERATOR $WEIGHTED_FLAG
+  python index.py --dataset $DATASET --walk_bias Exponential --initial_edge_bias Uniform --edge_operator $EDGE_OPERATOR $AUC_BY_PROBS_FLAG
 done
