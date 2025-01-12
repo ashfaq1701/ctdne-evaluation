@@ -152,7 +152,13 @@ class TemporalLinkPredictor:
         scaler = StandardScaler()
         features_scaled = scaler.fit_transform(features)
 
-        clf = LogisticRegressionCV(cv=3, solver="liblinear", max_iter=1000)
+        clf = LogisticRegressionCV(
+            cv=3,
+            scoring="roc_auc",
+            n_jobs=-1,
+            max_iter=1000,
+            solver='liblinear'
+        )
         clf.fit(features_scaled, labels)
 
         if self.embedding_params['auc_by_probs']:
