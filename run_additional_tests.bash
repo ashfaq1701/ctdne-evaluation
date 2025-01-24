@@ -11,6 +11,11 @@ if [[ "$*" == *--auc_by_probs* ]]; then
   AUC_BY_PROBS_FLAG="--auc_by_probs"
 fi
 
+PICKER_TYPE_FLAG=""
+if [[ "$*" == *--use_weight_based_picker* ]]; then
+  PICKER_TYPE_FLAG="--use_weight_based_picker"
+fi
+
 # Define datasets
 DATASETS=(
   ia_contact
@@ -32,7 +37,7 @@ INIT_EDGE_BIASES=(Uniform Linear)
 for DATASET in "${DATASETS[@]}"; do
   for WALK_BIAS in "${WALK_BIASES[@]}"; do
     for INIT_EDGE_BIAS in "${INIT_EDGE_BIASES[@]}"; do
-      python index.py --dataset $DATASET --walk_bias $WALK_BIAS --initial_edge_bias $INIT_EDGE_BIAS --edge_operator $EDGE_OPERATOR $WEIGHTED_FLAG $AUC_BY_PROBS_FLAG
+      python index.py --dataset $DATASET --walk_bias $WALK_BIAS --initial_edge_bias $INIT_EDGE_BIAS --edge_operator $EDGE_OPERATOR $WEIGHTED_FLAG $AUC_BY_PROBS_FLAG $PICKER_TYPE_FLAG
     done
   done
 done

@@ -11,6 +11,11 @@ if [[ "$*" == *--auc_by_probs* ]]; then
   AUC_BY_PROBS_FLAG="--auc_by_probs"
 fi
 
+PICKER_TYPE_FLAG=""
+if [[ "$*" == *--use_weight_based_picker* ]]; then
+  PICKER_TYPE_FLAG="--use_weight_based_picker"
+fi
+
 # Define datasets
 DATASETS=(
   fb_forum
@@ -30,5 +35,5 @@ fi
 
 # Loop through datasets and execute commands
 for DATASET in "${DATASETS[@]}"; do
-  python index.py --dataset $DATASET --walk_bias Exponential --initial_edge_bias Uniform --edge_operator $EDGE_OPERATOR $AUC_BY_PROBS_FLAG
+  python index.py --dataset $DATASET --walk_bias Exponential --initial_edge_bias Uniform --edge_operator $EDGE_OPERATOR $AUC_BY_PROBS_FLAG $PICKER_TYPE_FLAG
 done

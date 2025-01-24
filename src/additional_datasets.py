@@ -127,10 +127,10 @@ class SocSignBitcoinAlpha:
             edges_path,
             sep=r'\s+',
             header=None,
-            skiprows=1,
             names=["source", "target", "x", "time"],
             usecols=["source", "target", "time"],
-            engine='python'
+            engine='python',
+            skiprows=1
         )
 
         edges[["source", "target"]] = edges[["source", "target"]].astype(str)
@@ -182,7 +182,8 @@ class WikiElections:
             header=None,
             names=["source", "target", "x", "time"],
             usecols=["source", "target", "time"],
-            engine='python'
+            engine='python',
+            skiprows=1
         )
 
         edges[["source", "target"]] = edges[["source", "target"]].astype(str)
@@ -225,8 +226,7 @@ class FBLinks:
             header=None,
             names=["source", "target", "x", "time"],
             usecols=["source", "target", "time"],
-            engine='python',
-            skiprows=2
+            engine='python'
         )
 
         edges[["source", "target"]] = edges[["source", "target"]].astype(str)

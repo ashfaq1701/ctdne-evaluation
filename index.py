@@ -188,7 +188,7 @@ class TemporalLinkPredictor:
         num_cw = len(graph.nodes()) * self.embedding_params['num_walks'] * (self.embedding_params['walk_length'] - self.embedding_params['context_window'] + 1)
 
         # Convert edges for new temporal walk
-        edges_list = [(int(row[0]), int(row[1]), row[2]) for row in train_edges.to_numpy()]
+        edges_list = [(int(row[0]), int(row[1]), int(row[2])) for row in train_edges.to_numpy()]
 
         # Generate networkx graph for node2vec
         graph = nx.Graph() if not self.embedding_params['is_directed'] else nx.DiGraph()
@@ -317,6 +317,7 @@ def main():
     parser.add_argument('--edge_operator', type=str, default='best')
     parser.add_argument('--directed', action='store_true', help='Is a directed dataset')
     parser.add_argument('--auc_by_probs', action='store_true', help='Whether to run auc by probabilities')
+    parser.add_argument('--use_weight_based_picker', action='store_true', here='Whether to use weight based pickers')
 
     args = parser.parse_args()
 
@@ -336,14 +337,23 @@ def main():
 
     all_operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
 
+    initial_edge_bias = args.initial_edge_bias
+    walk_bias = args.walk_bias
+    if args.use_weight_based_pickers:
+        initial_edge_bias = f"{initial_edge_bias}{'' if initial_edge_bias is not 'Exponential' else 'Weight'}"
+        walk_bias = f"{walk_bias}{'' if walk_bias is not 'Exponential' else 'Weight'}"
+    else:
+        initial_edge_bias = f"{initial_edge_bias}{'' if initial_edge_bias is not 'Exponential' else 'Index'}"
+        walk_bias = f"{walk_bias}{'' if walk_bias is not 'Exponential' else 'Index'}"
+
     # Setup parameters
     params = {
         'embedding_size': EMBEDDING_SIZE,
         'num_walks': NUM_WALKS_PER_NODE,
         'walk_length': WALK_LENGTH,
         'context_window': context_window,
-        'walk_bias': args.walk_bias,
-        'initial_edge_bias': args.initial_edge_bias,
+        'walk_bias': walk_bias,
+        'initial_edge_bias': initial_edge_bias,
         'p': args.p,
         'q': args.q,
         'edge_operators': edge_operators,
@@ -392,13 +402,13 @@ def main():
         }
     }
 
-
     node2vec_type = 'weighted' if args.weighted_node2vec else 'unweighted'
     directed_suffix = 'directed' if args.directed else 'undirected'
     auc_type = 'probs' if args.auc_by_probs else 'preds'
+    picker_type_suffix = 'index' if not args.use_weight_based_picker else 'weight'
 
     # Save raw results
-    with open(f'save/{args.dataset}_{args.walk_bias}_{args.initial_edge_bias}_{context_window}_{node2vec_type}_{args.edge_operator}_{directed_suffix}_{auc_type}.pkl', 'wb') as f:
+    with open(f'save/{args.dataset}_{args.walk_bias}_{args.initial_edge_bias}_{context_window}_{node2vec_type}_{args.edge_operator}_{directed_suffix}_{auc_type}_{picker_type_suffix}.pkl', 'wb') as f:
         pickle.dump(raw_results, f)
 
     # Print summary statistics
