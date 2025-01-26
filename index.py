@@ -42,14 +42,23 @@ class TemporalLinkPredictor:
 
     def generate_new_temporal_walks(self, edges_list: List) -> List[List[str]]:
         """Generate walks using new temporal walk method"""
+        initial_edge_bias = self.embedding_params['initial_edge_bias']
+        walk_bias = self.embedding_params['walk_bias']
+        if self.embedding_params['use_weight_based_pickers']:
+            initial_edge_bias = f"{initial_edge_bias}{'' if initial_edge_bias != 'Exponential' else 'Weight'}"
+            walk_bias = f"{walk_bias}{'' if walk_bias != 'Exponential' else 'Weight'}"
+        else:
+            initial_edge_bias = f"{initial_edge_bias}{'' if initial_edge_bias != 'Exponential' else 'Index'}"
+            walk_bias = f"{walk_bias}{'' if walk_bias != 'Exponential' else 'Index'}"
+
         temporal_walk = TemporalWalk(is_directed=self.embedding_params['is_directed'])
 
         temporal_walk.add_multiple_edges(edges_list)
         walks = temporal_walk.get_random_walks_for_all_nodes(
             max_walk_len=self.embedding_params['walk_length'],
-            walk_bias=self.embedding_params['walk_bias'],
+            walk_bias=walk_bias,
             num_walks_per_node=self.embedding_params['num_walks'],
-            initial_edge_bias=self.embedding_params['initial_edge_bias'],
+            initial_edge_bias=initial_edge_bias,
             walk_direction="Forward_In_Time"
         )
         return [[str(node) for node in walk] for walk in walks]
@@ -286,7 +295,8 @@ def find_best_edge_operators(args, context_window, graph, edges):
             'edge_operators': (edge_operator, edge_operator, edge_operator),
             'weighted_node2vec': args.weighted_node2vec,
             'is_directed': args.directed,
-            'auc_by_probs': args.auc_by_probs
+            'auc_by_probs': args.auc_by_probs,
+            'use_weight_based_picker': args.use_weight_based_picker
         }
 
         for _ in range(BEST_EDGE_OPERATOR_SELECTOR_N_RUNS):
@@ -337,29 +347,21 @@ def main():
 
     all_operators = ['weighted-L1', 'weighted-L2', 'average', 'hadamard']
 
-    initial_edge_bias = args.initial_edge_bias
-    walk_bias = args.walk_bias
-    if args.use_weight_based_pickers:
-        initial_edge_bias = f"{initial_edge_bias}{'' if initial_edge_bias is not 'Exponential' else 'Weight'}"
-        walk_bias = f"{walk_bias}{'' if walk_bias is not 'Exponential' else 'Weight'}"
-    else:
-        initial_edge_bias = f"{initial_edge_bias}{'' if initial_edge_bias is not 'Exponential' else 'Index'}"
-        walk_bias = f"{walk_bias}{'' if walk_bias is not 'Exponential' else 'Index'}"
-
     # Setup parameters
     params = {
         'embedding_size': EMBEDDING_SIZE,
         'num_walks': NUM_WALKS_PER_NODE,
         'walk_length': WALK_LENGTH,
         'context_window': context_window,
-        'walk_bias': walk_bias,
-        'initial_edge_bias': initial_edge_bias,
+        'walk_bias': args.walk_bias,
+        'initial_edge_bias': args.initial_edge_bias,
         'p': args.p,
         'q': args.q,
         'edge_operators': edge_operators,
         'weighted_node2vec': args.weighted_node2vec,
         'is_directed': args.directed,
-        'auc_by_probs': args.auc_by_probs
+        'auc_by_probs': args.auc_by_probs,
+        'used_weight_based_picker': args.use_weight_based_picker
     }
 
     # Run multiple trials
